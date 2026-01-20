@@ -2,10 +2,126 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  color-scheme: dark;
-}
-
 html, body, #__next {
   height: 100%;
+}
+
+/* Custom scrollbar for webkit browsers */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 8px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgba(156, 163, 175, 0.2);
+  border-radius: 20px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(156, 163, 175, 0.3);
+}
+
+/* Loader Animation */
+.loader {
+  width: 120px;
+  height: 22px;
+  border-radius: 20px;
+  color: hsl(var(--p)); /* Matches theme primary color */
+  border: 2px solid;
+  position: relative;
+}
+.loader::before {
+  content: "";
+  position: absolute;
+  margin: 2px;
+  inset: 0 100% 0 0;
+  border-radius: inherit;
+  background: currentColor;
+  animation: l6 2s infinite;
+}
+@keyframes l6 {
+  100% {
+    inset: 0;
+  }
+}
+
+.citation-tooltip-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.citation-tooltip-bubble {
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  margin-top: 8px;
+  transform: translate(-50%, -4px);
+  white-space: nowrap;
+  border-radius: 10px;
+  background-color: #ffffff;
+  color: #0f172a;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  padding: 8px 14px;
+  font-size: 14px;
+  line-height: 1;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.35);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease, transform 120ms ease;
+  z-index: 20;
+}
+
+.citation-tooltip-wrapper:hover .citation-tooltip-bubble {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.citation-tooltip-bubble::before {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 0 6px 6px 6px;
+  border-style: solid;
+  border-color: transparent transparent #ffffff transparent;
+}
+
+.abstract-clamp-4 {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.abstract-toggle-btn {
+  position: absolute;
+  right: 12px;
+  bottom: 0;
+  padding-left: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: hsl(var(--p));
+}
+
+.abstract-toggle-btn:hover {
+  color: hsl(var(--pf));
+  text-decoration: underline;
+}
+
+.abstract-toggle-btn-expanded {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: hsl(var(--p));
+}
+
+.abstract-toggle-btn-expanded:hover {
+  color: hsl(var(--pf));
+  text-decoration: underline;
 }
