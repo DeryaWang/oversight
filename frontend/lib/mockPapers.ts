@@ -11,26 +11,6 @@ export type Paper = {
   first_author?: string;
 };
 
-const KATHERINE_LIU_PAPERS: Paper[] = Array.from({ length: 24 }, (_, idx) => {
-  const i = idx + 1;
-  const year = 2025 - Math.floor(idx / 6);
-  const month = ((idx % 12) + 1).toString().padStart(2, "0");
-  const day = ((idx % 27) + 1).toString().padStart(2, "0");
-  return {
-    paper_id: `kliu-${i}`,
-    title: `LLM Serving Efficiency: Practical Optimizations in the KV Cache Stack [${i}]`,
-    abstract:
-      "We study practical optimizations for LLM serving efficiency across the KV cache pipeline, including memory layout, prefill/decoding scheduling, and reuse strategies. We report consistent throughput and tail-latency improvements across a range of model sizes and prompt distributions.",
-    keywords: ["llm efficiency", "serving", "kv cache", "throughput", "tail latency"],
-    source: idx % 3 === 0 ? "OSDI" : idx % 3 === 1 ? "NSDI" : "MLSys",
-    paper_date: `${year}-${month}-${day}`,
-    link: "#",
-    citation_count: 20 + idx * 3,
-    first_author: "Katherine Liu",
-    authors: "Katherine Liu, Stanford University; Maria Santos, Stanford University",
-  };
-});
-
 export const MOCK_PAPERS: Paper[] = [
   {
     paper_id: "mh1",
@@ -266,7 +246,6 @@ export const MOCK_PAPERS: Paper[] = [
     link: "#",
     citation_count: 11,
   },
-  ...KATHERINE_LIU_PAPERS,
 ];
 
 export function getMockPapersByFirstAuthor(authorName: string): Paper[] {
@@ -274,3 +253,4 @@ export function getMockPapersByFirstAuthor(authorName: string): Paper[] {
   if (!normalized) return [];
   return MOCK_PAPERS.filter((p) => (p.first_author || "").trim().toLowerCase() === normalized);
 }
+

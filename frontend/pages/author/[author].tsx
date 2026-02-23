@@ -1,25 +1,26 @@
 import Head from "next/head";
+import Link from "next/link";
 import { useRouter } from "next/router";
-import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getMockPapersByFirstAuthor, type Paper } from "../../lib/mockPapers";
-
-const useIsomorphicLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
 export default function AuthorPapersPage() {
   const router = useRouter();
 
-  const [theme, setTheme] = useState<"dark" | "light">(() => {
-    if (typeof window === "undefined") return "dark";
-    const saved = window.localStorage.getItem("oversight_theme");
-    return saved === "light" ? "light" : "dark";
-  });
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
 
-  useIsomorphicLayoutEffect(() => {
+  useEffect(() => {
     if (typeof document !== "undefined") {
       document.documentElement.setAttribute("data-theme", theme);
-      window.localStorage.setItem("oversight_theme", theme);
     }
   }, [theme]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = window.localStorage.getItem("oversight_theme");
+    const next = saved === "light" ? "light" : "dark";
+    setTheme(next);
+  }, []);
 
   const authorName = useMemo(() => {
     const raw = router.query.author;
@@ -37,21 +38,8 @@ export default function AuthorPapersPage() {
     return getMockPapersByFirstAuthor(authorName);
   }, [authorName]);
 
-  const backTo = useMemo(() => {
-    const raw = router.query.from;
-    if (!raw) return "/";
-    const value = Array.isArray(raw) ? raw[0] : raw;
-    if (!value) return "/";
-    try {
-      const decoded = decodeURIComponent(value);
-      return decoded.startsWith("/") ? decoded : "/";
-    } catch {
-      return "/";
-    }
-  }, [router.query.from]);
-
   return (
-    <div className="min-h-screen bg-base-100 font-sans text-base-content">
+    <div data-theme={theme} className="min-h-screen bg-base-100 font-sans text-base-content">
       <Head>
         <title>{authorName ? `${authorName} - Author` : "Author"} | Oversight</title>
         <meta name="description" content="Author papers list" />
@@ -65,9 +53,9 @@ export default function AuthorPapersPage() {
             </div>
             <h1 className="text-xl font-bold">Oversight</h1>
           </div>
-          <button type="button" className="btn btn-sm btn-ghost" onClick={() => router.push(backTo)}>
+          <Link href="/" className="btn btn-sm btn-ghost">
             Back to search
-          </button>
+          </Link>
         </div>
       </header>
 
