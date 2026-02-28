@@ -60,11 +60,17 @@ class PaperRepository:
 
         paper_ids = []
         abstracts = []
+        skipped_missing_abstracts = 0
         for paper_id, abstract in papers_to_embed:
+            if abstract is None or abstract.strip() == "":
+                skipped_missing_abstracts += 1
+                continue
+
             paper_ids.append(paper_id)
             abstracts.append(abstract)
-            if abstract is None or abstract == "":
-                breakpoint()
+
+        if skipped_missing_abstracts:
+            print(f"Skipped {skipped_missing_abstracts} papers with empty abstracts")
 
         for i, (embedding, paper_id) in tqdm(enumerate(zip(self.embedding_model.embed_documents_rate_limited(abstracts), paper_ids)), desc="Embedding papers", total=len(paper_ids)):
             self.db.update_embedding(paper_id, embedding)
