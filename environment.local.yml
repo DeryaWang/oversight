@@ -1,0 +1,10 @@
+name: oversight-local
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - nodejs>=20
+  - libpq
+  - pip:
+      - -r requirements.local.txt

@@ -23,6 +23,7 @@ class PaperDatabase:
         database_url = os.getenv("DATABASE_URL")
         assert database_url is not None, "Database URL is not set"
         self.con = psycopg.connect(database_url)
+        self._ensure_schema()
         register_vector(self.con)
         return self
 
@@ -36,6 +37,63 @@ class PaperDatabase:
 
             self.con.close()
             self.con = None
+
+    def _ensure_schema(self):
+        """
+        Ensure required extensions and core tables exist.
+        This keeps local/dev environments bootstrappable with an empty database.
+        """
+        with self.con.cursor() as cur:
+            # Required by pgvector.psycopg.register_vector and halfvec column type.
+            cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            # Used for UUID default value on the paper table.
+            cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS paper (
+                    uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    paper_id VARCHAR NOT NULL UNIQUE,
+                    document JSONB NOT NULL,
+                    update_date DATE NOT NULL,
+                    source TEXT NOT NULL,
+                    abstract TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    link TEXT
+                )
+                """
+            )
+
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS embedding (
+                    paper_id VARCHAR PRIMARY KEY REFERENCES paper(paper_id) ON DELETE CASCADE,
+                    embedding_gemini_embedding_001 halfvec(3072)
+                )
+                """
+            )
+
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS arxiv_paper_categories (
+                    paper_id VARCHAR NOT NULL REFERENCES paper(paper_id) ON DELETE CASCADE,
+                    category TEXT NOT NULL,
+                    PRIMARY KEY (paper_id, category)
+                )
+                """
+            )
+
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_paper_update_date ON paper(update_date)
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_paper_source ON paper(source)
+                """
+            )
 
     def insert_paper(self, paper: Paper):
         with self.con.cursor() as cur:
@@ -173,6 +231,8 @@ class PaperDatabase:
                   ON emb.paper_id = ps.paper_id
                 WHERE emb.embedding_gemini_embedding_001 IS NULL
                   AND ps.source != 'arxiv'
+                  AND ps.abstract IS NOT NULL
+                  AND btrim(ps.abstract) <> ''
             """).fetchall()
     
     def update_embedding(self, paper_id: str, embedding: list[float]):

@@ -36,6 +36,13 @@ type AgentMeta = {
   };
 };
 
+function branchLabel(branchId: string): string {
+  if (branchId === "branch_a") return "Branch A";
+  if (branchId === "branch_b") return "Branch B";
+  if (branchId === "branch_c") return "Branch C";
+  return branchId;
+}
+
 function PaperCard({
   p,
   navigateToAbstract,
@@ -230,12 +237,14 @@ export default function HomePage() {
   });
   const [loading, setLoading] = useState(false);
   const lastRequestIdRef = useRef<number>(0);
+  const activeRequestControllerRef = useRef<AbortController | null>(null);
+  const hasSearchedRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<Paper[]>([]);
   const [queryGroups, setQueryGroups] = useState<QueryGroupResult[] | null>(null);
   const [agentMeta, setAgentMeta] = useState<AgentMeta | null>(null);
   
-  const [sortBy, setSortBy] = useState<"relevance" | "date" | "citation">("relevance");
+  const [sortBy, setSortBy] = useState<"relevance" | "date">("relevance");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   
@@ -268,7 +277,7 @@ export default function HomePage() {
 
   // Trigger search when time range or sources changes
   useEffect(() => {
-    if (text.trim()) {
+    if (hasSearchedRef.current && text.trim()) {
       onSubmit({ preventDefault: () => {} } as React.FormEvent);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -293,14 +302,14 @@ export default function HomePage() {
         const dateB = b.paper_date ? new Date(b.paper_date).getTime() : 0;
         return sortDirection === "desc" ? dateB - dateA : dateA - dateB;
       }
-      if (sortBy === "citation") {
-        const countA = a.citation_count || 0;
-        const countB = b.citation_count || 0;
-        return sortDirection === "desc" ? countB - countA : countA - countB;
-      }
       return 0;
     });
   }, [results, sortBy, sortDirection]);
+
+  const hasBranchResults = useMemo(
+    () => Array.isArray(queryGroups) && queryGroups.some((g) => (g.results?.length ?? 0) > 0),
+    [queryGroups]
+  );
 
   const isAllAISelected = aiConferences.every(conf => sources[conf as keyof typeof sources]);
   const isAllSystemsSelected = systemsConferences.every(conf => sources[conf as keyof typeof sources]);
@@ -335,8 +344,12 @@ export default function HomePage() {
     setError(null);
     setLoading(true);
     setResults([]);
-    setQueryGroups(null);
-    setAgentMeta(null);
+    hasSearchedRef.current = true;
+
+    // Keep only one in-flight search request to avoid stale-response races.
+    activeRequestControllerRef.current?.abort();
+    const controller = new AbortController();
+    activeRequestControllerRef.current = controller;
 
     const reqId = Date.now();
     lastRequestIdRef.current = reqId;
@@ -376,22 +389,39 @@ export default function HomePage() {
         method: "POST",
         headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
         cache: "no-store",
+        signal: controller.signal,
         body: JSON.stringify(requestBody),
       });
 
       const contentType = resp.headers.get("content-type") || "";
       const payload: any = contentType.includes("application/json") ? await resp.json() : await resp.text();
+      let data: Record<string, any> = {};
+      if (typeof payload === "string") {
+        try {
+          data = JSON.parse(payload);
+        } catch {
+          data = {};
+        }
+      } else if (payload && typeof payload === "object") {
+        data = payload;
+      }
+      const root = (data && typeof data.data === "object") ? data.data : data;
+      const groups: QueryGroupResult[] | null = Array.isArray(root?.query_groups)
+        ? root.query_groups
+        : (Array.isArray(root?.queryGroups) ? root.queryGroups : null);
+      const agent: AgentMeta | null = root?.agent || root?.agent_meta || null;
+
       if (!resp.ok) {
+        if (lastRequestIdRef.current !== reqId) return;
+        setQueryGroups(groups);
+        setAgentMeta(agent);
         const msg = typeof payload === "string" ? payload : payload?.error || `Request failed: ${resp.status}`;
         throw new Error(msg);
       }
 
       if (lastRequestIdRef.current !== reqId) return;
 
-      const data = typeof payload === "string" ? {} : payload;
       const directResults: Paper[] = Array.isArray(data.results) ? data.results : [];
-      const groups: QueryGroupResult[] | null = Array.isArray(data.query_groups) ? data.query_groups : null;
-      const agent: AgentMeta | null = data?.agent || null;
 
       let mergedResults: Paper[] = directResults;
       if (mergedResults.length === 0 && groups) {
@@ -423,19 +453,19 @@ export default function HomePage() {
       setQueryGroups(groups);
       setAgentMeta(agent);
     } catch (err: any) {
+      if (err?.name === "AbortError") return;
       if (lastRequestIdRef.current !== reqId) return;
       setError(err?.message || String(err));
     } finally {
+      if (activeRequestControllerRef.current === controller) {
+        activeRequestControllerRef.current = null;
+      }
       if (lastRequestIdRef.current === reqId) setLoading(false);
     }
   }
 
   function navigateToAbstract(paper: Paper) {
-    const keywords = paper.keywords && paper.keywords.length > 0
-      ? paper.keywords
-      : tokenizeQuery(paper.title).slice(0, 6);
-
-    const nextText = keywords.join(" ");
+    const nextText = (paper.abstract || "").trim() || paper.title;
     setText(nextText);
     setSortBy("relevance");
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -641,7 +671,8 @@ export default function HomePage() {
                       </svg>
                       <span className="truncate">Describe your research interest or paste an abstract to find similar papers</span>
                     </div>
-                    <button  
+                    <button
+                      type="button"
                       onClick={(e) => onSubmit(e as any)}
                       className="btn btn-primary btn-sm rounded-lg px-6 shadow-md shadow-primary/20 h-9 font-bold tracking-wide"
                       disabled={loading}
@@ -668,41 +699,26 @@ export default function HomePage() {
               </div>
             )}
 
-            {(agentMeta || (queryGroups && queryGroups.length > 0)) && (
-              <details className="collapse collapse-arrow bg-base-200 border border-base-300 flex-none">
-                <summary className="collapse-title text-sm font-medium">Agent details</summary>
-                <div className="collapse-content text-sm">
-                  {agentMeta && (
-                    <div className="mb-3 flex flex-wrap gap-2">
-                      <span className={`badge ${agentMeta.enabled ? "badge-primary" : "badge-ghost"}`}>Agent {agentMeta.enabled ? "on" : "off"}</span>
-                      {agentMeta.round1_status && <span className="badge badge-outline">R1: {agentMeta.round1_status}</span>}
-                      {agentMeta.partial_success && <span className="badge badge-warning">partial success</span>}
-                      {agentMeta.model && <span className="badge badge-neutral">{agentMeta.model}</span>}
-                      {agentMeta.error && <span className="badge badge-error">error</span>}
-                    </div>
-                  )}
+            {(agentMeta !== null || queryGroups !== null) && (
+              <div className="bg-base-200 border border-base-300 rounded-box flex-none p-4">
+                <div className="text-sm font-medium mb-3">Agent details</div>
+                <div className="text-sm">
                   {Array.isArray(queryGroups) && queryGroups.length > 0 && (
-                    <div className="space-y-2">
+                    <div className="mb-3 space-y-2">
+                      <div className="text-xs font-semibold uppercase tracking-wide opacity-70">Branch queries</div>
                       {queryGroups.map((g) => (
-                        <div key={g.branch_id} className="rounded-lg bg-base-100 p-3 border border-base-300/50">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="badge badge-primary">{g.branch_id}</span>
-                            {g.status && (
-                              <span className={`badge ${g.status === "success" ? "badge-success" : g.status === "timeout" ? "badge-warning" : "badge-error"}`}>{g.status}</span>
-                            )}
-                            <span className="text-xs opacity-60">{(g.results?.length ?? 0)} results</span>
-                          </div>
-                          {g.search_query && <div className="mt-2 text-xs opacity-70 break-words">{g.search_query}</div>}
-                          {g.error && <div className="mt-2 text-xs text-error break-words">{g.error}</div>}
+                        <div key={`agent-query-${g.branch_id}`} className="rounded bg-base-100 border border-base-300/50 p-2">
+                          <div className="text-xs font-medium opacity-80">{branchLabel(g.branch_id)}</div>
+                          <div className="text-xs opacity-70 break-words">{g.search_query || "(no query generated)"}</div>
                         </div>
                       ))}
                     </div>
                   )}
-                  {agentMeta?.debug?.round1_output && (
-                    <pre className="mt-3 max-h-52 overflow-auto rounded bg-base-100 p-3 text-xs border border-base-300/50">{JSON.stringify(agentMeta.debug.round1_output, null, 2)}</pre>
-                  )}
+                  <pre className="mt-1 max-h-72 overflow-auto rounded bg-base-100 p-3 text-xs border border-base-300/50">
+                    {JSON.stringify(agentMeta ?? { message: "No agent metadata returned for this request." }, null, 2)}
+                  </pre>
                 </div>
-              </details>
+              </div>
             )}
 
             {/* Toolbar */}
@@ -758,10 +774,9 @@ export default function HomePage() {
                     </svg>
                     Sort: {sortBy.charAt(0).toUpperCase() + sortBy.slice(1)}
                   </label>
-                  <ul tabIndex={0} className="dropdown-content menu menu-sm p-2 shadow bg-base-200 rounded-box w-40 z-10 mt-1">
+                    <ul tabIndex={0} className="dropdown-content menu menu-sm p-2 shadow bg-base-200 rounded-box w-40 z-10 mt-1">
                     <li><a className={sortBy === 'relevance' ? 'active' : ''} onClick={() => { setSortBy('relevance'); (document.activeElement as HTMLElement)?.blur(); }}>Relevance</a></li>
                     <li><a className={sortBy === 'date' ? 'active' : ''} onClick={() => { setSortBy('date'); setSortDirection('desc'); (document.activeElement as HTMLElement)?.blur(); }}>Date</a></li>
-                    <li><a className={sortBy === 'citation' ? 'active' : ''} onClick={() => { setSortBy('citation'); setSortDirection('desc'); (document.activeElement as HTMLElement)?.blur(); }}>Citations</a></li>
                   </ul>
                 </div>
                 </div>
@@ -770,7 +785,43 @@ export default function HomePage() {
 
             {/* Results List */}
             <div className="flex-1 space-y-4 pr-2 pb-10">
-              {(() => {
+              {hasBranchResults && Array.isArray(queryGroups) && (
+                <div className="space-y-6">
+                  {queryGroups.map((g) => {
+                    const papers = g.results || [];
+                    const topPapers = papers.slice(0, 10);
+                    return (
+                      <section key={g.branch_id} className="space-y-3">
+                        <div className="flex items-center gap-2">
+                          <span className="badge badge-primary">{branchLabel(g.branch_id)}</span>
+                          {g.status && (
+                            <span className={`badge ${g.status === "success" ? "badge-success" : g.status === "timeout" ? "badge-warning" : "badge-error"}`}>
+                              {g.status}
+                            </span>
+                          )}
+                          <span className="text-xs opacity-70">Top {topPapers.length} results</span>
+                        </div>
+                        {topPapers.length > 0 ? (
+                          <div className="space-y-4">
+                            {topPapers.map((p) => (
+                              <PaperCard
+                                key={`${g.branch_id}-${p.paper_id}`}
+                                p={p}
+                                navigateToAbstract={navigateToAbstract}
+                                openAuthorPage={openAuthorPage}
+                              />
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-xs opacity-60">No papers for this branch.</div>
+                        )}
+                      </section>
+                    );
+                  })}
+                </div>
+              )}
+
+              {!hasBranchResults && (() => {
                   const limitedResults = limit === 'all' || limit === '' ? sortedResults : sortedResults.slice(0, limit as number);
                   const totalPages = Math.ceil(limitedResults.length / itemsPerPage);
                   const currentResults = limitedResults.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);

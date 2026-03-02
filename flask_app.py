@@ -1,12 +1,13 @@
 from datetime import datetime, timedelta
 import os
-from typing import Dict, List
+from typing import Any, Dict, List
 
-from flask import Flask, jsonify, request
+from flask import Flask, request
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-from PaperRepository import PaperRepository
+from query_decomposition_agent import QueryDecompositionAgent
+from linear_rag_search import LinearRAGSearchEngine
 from PaperDatabase import PaperDatabase
 from ArXivRepository import ArXivRepository
 from ResearchListener import research_listener_group
@@ -18,6 +19,7 @@ app = Flask(__name__)
 # Allow local Next.js dev server by default; can be customized with CORS_ORIGINS
 cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 CORS(app, resources={r"/api/*": {"origins": cors_origins}})
+_search_engine: LinearRAGSearchEngine | None = None
 
 
 @app.get("/api/health")
@@ -25,40 +27,85 @@ def health() -> tuple[dict, int]:
     return {"status": "ok"}, 200
 
 
-def _build_filters(repo: PaperRepository, sources_flags: Dict[str, bool]) -> List[str]:
-    filters: List[str] = []
-    
-    # Collect individual sources
+def _build_filters(sources_flags: Dict[str, bool]) -> List[str]:
     selected_sources = []
-    
-    # Handle arXiv
+
     if sources_flags.get("arxiv", False):
         selected_sources.append("arxiv")
-    
-    # Handle individual AI conferences
+
     ai_conferences = ["ICML", "NeurIPS", "ICLR"]
     for conf in ai_conferences:
         if sources_flags.get(conf, False):
             selected_sources.append(conf)
-    
-    # Handle individual Systems conferences  
+
     systems_conferences = ["OSDI", "SOSP", "ASPLOS", "ATC", "NSDI", "MLSys", "EuroSys", "VLDB"]
     for conf in systems_conferences:
         if sources_flags.get(conf, False):
             selected_sources.append(conf)
-    
-    # Build filter from selected sources
-    if selected_sources:
-        filters.append(repo.build_filter_string(selected_sources))
-    else:
-        # If nothing selected, default to everything
-        filters.append(repo.build_filter_string([
-            "arxiv",
-            "ICML", "NeurIPS", "ICLR", 
-            "OSDI", "SOSP", "ASPLOS", "ATC", "NSDI", "MLSys", "EuroSys", "VLDB"
-        ]))
 
-    return filters
+    if selected_sources:
+        return selected_sources
+
+    return [
+        "arxiv",
+        "ICML", "NeurIPS", "ICLR",
+        "OSDI", "SOSP", "ASPLOS", "ATC", "NSDI", "MLSys", "EuroSys", "VLDB",
+    ]
+
+
+def _get_search_engine() -> LinearRAGSearchEngine:
+    global _search_engine
+    if _search_engine is not None:
+        return _search_engine
+
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.getenv("LINEAR_RAG_DATA_DIR", os.path.join(repo_root, "data"))
+    linear_rag_root = os.getenv("LINEAR_RAG_ROOT", os.path.join(repo_root, "LinearRAG"))
+    working_dir = os.getenv("LINEAR_RAG_WORKING_DIR", os.path.join(linear_rag_root, "import"))
+    dataset_name = os.getenv("LINEAR_RAG_DATASET_NAME", "oversight_data")
+    embedding_model_name = os.getenv("LINEAR_RAG_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    spacy_model = os.getenv("LINEAR_RAG_SPACY_MODEL", "en_core_web_sm")
+    # Keep default conservative for local stability; users can tune up explicitly.
+    max_workers = int(os.getenv("LINEAR_RAG_MAX_WORKERS", "1"))
+    retrieval_pool_size = int(os.getenv("LINEAR_RAG_RETRIEVAL_POOL_SIZE", "120"))
+    use_vectorized_retrieval = os.getenv("LINEAR_RAG_USE_VECTORIZED", "false").lower() == "true"
+
+    _search_engine = LinearRAGSearchEngine(
+        data_dir=data_dir,
+        linear_rag_root=linear_rag_root,
+        working_dir=working_dir,
+        dataset_name=dataset_name,
+        embedding_model_name=embedding_model_name,
+        spacy_model=spacy_model,
+        max_workers=max_workers,
+        retrieval_pool_size=retrieval_pool_size,
+        use_vectorized_retrieval=use_vectorized_retrieval,
+    )
+    return _search_engine
+
+
+def _paper_to_api_dict(p: Any) -> dict[str, Any]:
+    return {
+        "paper_id": p.paper_id,
+        "title": p.title,
+        "abstract": p.abstract,
+        "source": p.source,
+        "link": p.link,
+        "paper_date": p.paper_date.isoformat() if hasattr(p.paper_date, "isoformat") else str(p.paper_date),
+    }
+
+
+def _dedupe_flat_results(query_groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen_paper_ids: set[str] = set()
+    flattened: list[dict[str, Any]] = []
+    for group in query_groups:
+        for paper in group.get("results", []) or []:
+            paper_id = str(paper.get("paper_id", ""))
+            if not paper_id or paper_id in seen_paper_ids:
+                continue
+            seen_paper_ids.add(paper_id)
+            flattened.append(paper)
+    return flattened
 
 
 @app.post("/api/search")
@@ -67,25 +114,22 @@ def search() -> tuple[dict, int]:
     body = request.get_json(silent=True) or {}
     # Support query params for GET as well
     if request.method == "GET" and not body:
-        # Create sources dict from individual conference params
         sources = {
             "arxiv": request.args.get("arxiv", "false").lower() == "true",
         }
-        
-        # Add individual AI conferences
+
         ai_conferences = ["ICML", "NeurIPS", "ICLR"]
         for conf in ai_conferences:
             sources[conf] = request.args.get(conf, "false").lower() == "true"
-            
-        # Add individual Systems conferences
-        systems_conferences = ["OSDI", "SOSP", "ASPLOS", "ATC", "NSDI", "MLSys", "EuroSys", "VLDB"]  
+
+        systems_conferences = ["OSDI", "SOSP", "ASPLOS", "ATC", "NSDI", "MLSys", "EuroSys", "VLDB"]
         for conf in systems_conferences:
             sources[conf] = request.args.get(conf, "false").lower() == "true"
-        
+
         body = {
             "text": request.args.get("text", ""),
             "time_window_days": request.args.get("time_window_days"),
-            "sources": sources
+            "sources": sources,
         }
 
     query_text: str = body.get("text", "").strip()
@@ -93,16 +137,18 @@ def search() -> tuple[dict, int]:
         return {"error": "text is required"}, 400
 
     time_window_days = body.get("time_window_days")
-    start_date = body.get("start_date")
-    end_date = body.get("end_date")
-
-    # Backwards compatibility for time_window_days
-    if not start_date and time_window_days is not None:
+    if time_window_days is None and body.get("start_date"):
         try:
-            days = int(time_window_days)
-            start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        except ValueError:
-            return {"error": "time_window_days must be an integer"}, 400
+            start_date = datetime.fromisoformat(str(body.get("start_date"))).date()
+            delta_days = (datetime.now().date() - start_date).days
+            time_window_days = max(1, delta_days)
+        except Exception:
+            return {"error": "start_date must be in YYYY-MM-DD format"}, 400
+
+    try:
+        time_window_days_int = int(time_window_days) if time_window_days is not None else 365 * 5
+    except Exception:
+        return {"error": "time_window_days must be an integer"}, 400
 
     limit = body.get("limit")
     try:
@@ -112,31 +158,82 @@ def search() -> tuple[dict, int]:
         return {"error": "limit must be an integer between 1 and 100"}, 400
 
     sources_flags: Dict[str, bool] = body.get("sources", {}) or {}
+    selected_sources = _build_filters(sources_flags)
+    search_engine = _get_search_engine()
+    agent = QueryDecompositionAgent.from_env()
+    agent_run = agent.decompose(query_text)
+    query_timedelta = timedelta(days=time_window_days_int)
 
-    # Use repository in a context so connections are properly managed
-    with PaperRepository(embedding_model_name="models/gemini-embedding-001") as repo:
-        filters = _build_filters(repo, sources_flags)
-        papers = repo.get_newest_related_papers(
-            text=query_text,
-            filter_list=filters,
-            start_date=start_date,
-            end_date=end_date,
-            limit=limit_int,
-        )
+    # If the agent is disabled/unconfigured, preserve legacy single-query search behavior.
+    if not agent_run.enabled:
+        try:
+            papers = search_engine.search_related_papers(
+                query_text=query_text,
+                query_timedelta=query_timedelta,
+                selected_sources=selected_sources,
+                limit=limit_int,
+            )
+        except Exception as exc:
+            return {
+                "error": f"LinearRAG retrieval failed: {exc}",
+                "results": [],
+                "query_groups": [],
+                "agent": agent_run.agent_meta(include_debug=agent.debug),
+            }, 502
 
-    results = []
-    for p in papers:
-        results.append({
-            "paper_id": p.paper_id,
-            "title": p.title,
-            "abstract": p.abstract,
-            "source": p.source,
-            "link": p.link,
-            # paper_date is a datetime.date or datetime; convert to ISO string
-            "paper_date": p.paper_date.isoformat() if hasattr(p.paper_date, "isoformat") else str(p.paper_date),
-        })
+        results = [_paper_to_api_dict(p) for p in papers]
+        return {
+            "results": results,
+            "query_groups": [],
+            "agent": agent_run.agent_meta(include_debug=agent.debug),
+        }, 200
 
-    return {"results": results}, 200
+    if agent_run.round1_status == "failed":
+        return {
+            "error": agent_run.error or "Local agent round 1 failed",
+            "results": [],
+            "query_groups": [],
+            "agent": agent_run.agent_meta(include_debug=agent.debug),
+        }, 502
+
+    query_groups: list[dict[str, Any]] = []
+    for branch in agent_run.branches:
+        group_payload = branch.to_dict()
+        group_payload["results"] = []
+
+        if branch.status != "success" or not branch.search_query:
+            query_groups.append(group_payload)
+            continue
+
+        try:
+            papers = search_engine.search_related_papers(
+                query_text=branch.search_query,
+                query_timedelta=query_timedelta,
+                selected_sources=selected_sources,
+                limit=limit_int,
+            )
+            group_payload["results"] = [_paper_to_api_dict(p) for p in papers]
+        except Exception as exc:
+            group_payload["status"] = "failed"
+            group_payload["error"] = f"Retrieval failed: {exc}"
+            group_payload["results"] = []
+
+        query_groups.append(group_payload)
+
+    if not any(group["status"] == "success" for group in query_groups):
+        return {
+            "error": agent_run.error or "All query branches failed",
+            "results": [],
+            "query_groups": query_groups,
+            "agent": agent_run.agent_meta(include_debug=agent.debug),
+        }, 502
+
+    results = _dedupe_flat_results(query_groups)
+    return {
+        "results": results,
+        "query_groups": query_groups,
+        "agent": agent_run.agent_meta(include_debug=agent.debug),
+    }, 200
 
 
 @app.get("/api/author/papers")
@@ -176,43 +273,44 @@ def sync() -> tuple[dict, int]:
     This endpoint initializes an ArXivRepository and calls its sync method.
     """
     try:
-        # Initialize ArXivRepository with same model configurations as used elsewhere
         with ArXivRepository(
             embedding_model_name="models/gemini-embedding-001",
-            research_llm_model_name="google/gemini-2.5-flash"
+            research_llm_model_name="google/gemini-2.5-flash",
         ) as arxiv_repo:
             arxiv_repo.sync()
-        
+
         return {"status": "success", "message": "ArXiv repository sync completed successfully"}, 200
-    
+
     except Exception as e:
-        # Log the error for debugging but return a safe error message
         app.logger.error(f"Error during ArXiv sync: {str(e)}")
         return {"status": "error", "message": f"Sync failed: {str(e)}"}, 500
+
 
 @app.post("/api/digest")
 def digest() -> tuple[dict, int]:
     """
     Send email digest to research listener group without updating the repository.
-    This endpoint initializes an ArXivRepository and calls email_daily_digest method.
+    This endpoint initializes an ArXivRepository and calls email_weekly_digest.
     """
     try:
-        # Initialize ArXivRepository with same model configurations as used elsewhere
         with ArXivRepository(
             embedding_model_name="models/gemini-embedding-001",
-            research_llm_model_name="google/gemini-2.5-flash"
+            research_llm_model_name="google/gemini-2.5-flash",
         ) as arxiv_repo:
-            # Send email digest without syncing (same as --digest --no-sync)
             arxiv_repo.email_weekly_digest(research_listener_group)
 
         return {"status": "success", "message": "Email digest sent successfully"}, 200
 
     except Exception as e:
-        # Log the error for debugging but return a safe error message
         app.logger.error(f"Error during digest email: {str(e)}")
         return {"status": "error", "message": f"Digest email failed: {str(e)}"}, 500
+
 
 if __name__ == "__main__":
     # Bind to all interfaces for local dev; port can be overridden via FLASK_PORT
     port = int(os.getenv("FLASK_PORT", "5001"))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    # Use project-specific flags so inherited Flask env vars do not accidentally
+    # enable auto-reload during long-running LinearRAG indexing.
+    debug_enabled = os.getenv("OVERSIGHT_FLASK_DEBUG", "false").lower() == "true"
+    use_reloader = os.getenv("OVERSIGHT_FLASK_RELOADER", "false").lower() == "true"
+    app.run(host="0.0.0.0", port=port, debug=debug_enabled, use_reloader=use_reloader)

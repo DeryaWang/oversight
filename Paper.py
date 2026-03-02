@@ -129,7 +129,13 @@ class Paper:
     
     @staticmethod
     def from_database_row(row: tuple):
-        (uuid, created_at, paper_id, document, update_date, embedding_gemini_embedding_001, source, abstract, title, link, similarity) = row
+        if len(row) == 11:
+            (uuid, created_at, paper_id, document, update_date, embedding_gemini_embedding_001, source, abstract, title, link, similarity) = row
+        elif len(row) == 10:
+            (uuid, created_at, paper_id, document, update_date, source, abstract, title, link, similarity) = row
+            embedding_gemini_embedding_001 = None
+        else:
+            raise ValueError(f"Unexpected row length for paper: {len(row)}")
 
         paper = Paper(
             paper_id=paper_id,
@@ -138,7 +144,8 @@ class Paper:
             abstract=abstract,
             paper_date=update_date,
             source=source,
-            link=link
+            link=link,
+            embedding_gemini_embedding_001=embedding_gemini_embedding_001,
         )
 
         return paper, similarity
