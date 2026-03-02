@@ -2,15 +2,17 @@ import os
 
 from dotenv import load_dotenv
 from ConferenceSearchEngine import ConferenceSearchEngine
+from reranker import BGEReranker
 
-def pretty_print_doc(doc):
+def pretty_print_doc(doc, score=None):
 	title_str = ""
 	title_str += doc.metadata["title"]
 	title_str += f" ({','.join(doc.metadata['conference'])}"
 	title_str += f" {doc.metadata['year']}"
 	title_str += f", {doc.metadata['session']})"
 
-
+	if score is not None:
+		print(f"--- [Semantic Score: {score:.4f}] ---")
 	print(title_str)
 	print(doc.metadata["authors"])
 	print()
@@ -23,34 +25,45 @@ def pretty_print_doc(doc):
 def main():
 	load_dotenv()
 
-	# TODO: Make support many different embedding models + experiment with different embedding models. Add multiple named embeddings for each document.
-	# TODO: Experiment with better ways of doing the actual similarity search, like what queries I should use.
-	# TODO: Merge this repo with my conference scraper
-	# TODO: Add a way of doing a pass on existing documents and appending a new kind of embedding
-	# TODO: Add more conferences (MLSys, HPCA, ISCA), now I can realistically process all of this information
-	# TODO: Add AI conferences (NeurIPS, ICML, ICLR, etc.)
-	# TODO: Run some kind of cronjob that processes data feeds and alerts me of new relevant information, storing any information that was relevant
-	# TODO: Add additional data sources (e.g. arxiv, email feeds, blogs)
-	# TODO: Experiment with feeding whole papers in
-	# TODO: See if I can do a multi-keyword search (an AND-based cosine similarity)
-	# TODO: Set up agents that help me to scrape this data
-
 	search_engine = ConferenceSearchEngine(
 		embedded_docs_path="data/docs/gemini_embedded_docs.json",
 		embedding_model="models/embedding-001",
-		# filter=lambda metadata: "MLSYS" in metadata["conference"] and int(metadata["year"]) == 2024,
-		# filter=lambda metadata: int(metadata["year"]) > 2023,
-		# filter=lambda metadata: "OSDI" in metadata["conference"],
 		filter=lambda _: True,
 		google_api_key=os.environ["GOOGLE_API_KEY"]
 	)
 
 	query = "Large language model (LLM) applications are evolving beyond simple chatbots into dynamic, general-purpose agentic programs, which scale LLM calls and output tokens to help AI agents reason, explore, and solve complex tasks. However, existing LLM serving systems ignore dependencies between programs and calls, missing significant opportunities for optimization. Our analysis reveals that programs submitted to LLM serving engines experience long cumulative wait times, primarily due to head-of-line blocking at both the individual LLM request and the program.  To address this, we introduce Autellix, an LLM serving system that treats programs as first-class citizens to minimize their end-to-end latencies."
 
-	docs = search_engine.vs.similarity_search(query, k=10)
+	# 1. Similarity Search (Retrieval)
+	docs = search_engine.vs.similarity_search(query, k=20)
 
-	for doc in docs:
-		pretty_print_doc(doc)
+	# 2. Re-ranking
+	enabled = os.getenv("OVERSIGHT_RERANK_ENABLED", "true").lower() == "true"
+	if enabled:
+		reranker = BGEReranker()
+		papers = []
+		for doc in docs:
+			papers.append({
+				"title": doc.metadata["title"],
+				"abstract": doc.page_content,
+				"metadata": doc.metadata
+			})
+		
+		reranked = reranker.rerank(query=query, papers=papers, top_k=10)
+		for doc_info in reranked:
+			# Mocking back a doc object for pretty_print
+			class MockDoc:
+				def __init__(self, title, content, metadata):
+					self.metadata = metadata
+					self.page_content = content
+			
+			pretty_print_doc(
+				MockDoc(doc_info["title"], doc_info["abstract"], doc_info["metadata"]), 
+				score=doc_info.get("semantic_score")
+			)
+	else:
+		for doc in docs[:10]:
+			pretty_print_doc(doc)
 
 if __name__ == "__main__":
 	main()
