@@ -217,6 +217,7 @@ export default function HomePage() {
   });
 
   const [showCustomRange, setShowCustomRange] = useState(false);
+  const [rerankEnabled, setRerankEnabled] = useState(false);
 
   const [limit, setLimit] = useState<number | 'all' | ''>('all');
   const [sources, setSources] = useState({
@@ -360,6 +361,7 @@ export default function HomePage() {
     const requestBody: Record<string, unknown> = {
       text: queryText,
       sources,
+      rerank: rerankEnabled,
       limit: (() => {
         if (typeof limit === "number" && Number.isFinite(limit) && limit > 0) return Math.max(1, Math.min(100, limit));
         if (limit === "") return 10;
@@ -572,6 +574,24 @@ export default function HomePage() {
               </div>
 
 
+            </div>
+
+            <div className="rounded-xl bg-base-200 p-4 shadow-sm">
+              <h3 className="mb-4 text-sm font-bold uppercase tracking-wider opacity-70">Settings</h3>
+              <div className="form-control">
+                <label className="flex cursor-pointer items-center justify-between py-1 hover:bg-base-300/50 p-1 rounded">
+                  <span className="text-sm font-medium">Semantic Rerank</span>
+                  <input 
+                    type="checkbox" 
+                    className="toggle toggle-primary toggle-sm" 
+                    checked={rerankEnabled} 
+                    onChange={() => setRerankEnabled(!rerankEnabled)} 
+                  />
+                </label>
+                <p className="text-[10px] opacity-50 mt-1 leading-tight">
+                  Uses BGE-v2-m3 Cross-Encoder for deep semantic re-ranking (High VRAM usage).
+                </p>
+              </div>
             </div>
 
             <div className="rounded-xl bg-base-200 p-4 shadow-sm">

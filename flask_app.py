@@ -180,6 +180,10 @@ def search() -> tuple[dict, int]:
 
     sources_flags: Dict[str, bool] = body.get("sources", {}) or {}
     selected_sources = _build_filters(sources_flags)
+    
+    # Check if reranking is requested by the client (defaults to false if not specified)
+    rerank_requested = body.get("rerank", False)
+    
     search_engine = _get_search_engine()
     agent = QueryDecompositionAgent.from_env()
     agent_run = agent.decompose(query_text)
@@ -251,10 +255,10 @@ def search() -> tuple[dict, int]:
 
     results = _dedupe_flat_results(query_groups)
     
-    # Post-process: Re-rank results against the original user query for global semantic relevance
+    # Post-process: Re-rank results if requested by the client and the reranker is available
     reranker = _get_reranker()
-    if reranker and results:
-        # Use a larger internal top_k for reranking before truncating back to the requested limit
+    if reranker and results and rerank_requested:
+        # Re-rank against the original user query for global semantic relevance
         reranked_top_k = int(os.getenv("OVERSIGHT_RERANK_TOP_K", str(limit_int)))
         results = reranker.rerank(query=query_text, papers=results, top_k=reranked_top_k)
 
