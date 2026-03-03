@@ -11,6 +11,7 @@ from linear_rag_search import LinearRAGSearchEngine
 from PaperDatabase import PaperDatabase
 from ArXivRepository import ArXivRepository
 from ResearchListener import research_listener_group
+from reranker import BGEReranker
 
 # Load environment variables early so repo/db can connect
 load_dotenv()
@@ -20,11 +21,31 @@ app = Flask(__name__)
 cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 CORS(app, resources={r"/api/*": {"origins": cors_origins}})
 _search_engine: LinearRAGSearchEngine | None = None
+_reranker: BGEReranker | None = None
 
 
 @app.get("/api/health")
 def health() -> tuple[dict, int]:
     return {"status": "ok"}, 200
+
+
+def _get_reranker() -> BGEReranker | None:
+    """
+    Singleton getter for the BGE Reranker to avoid reloading the model on every request.
+    """
+    global _reranker
+    if _reranker is not None:
+        return _reranker
+
+    # Only load reranker if explicitly enabled via environment variable
+    enabled = os.getenv("OVERSIGHT_RERANK_ENABLED", "true").lower() == "true"
+    if not enabled:
+        return None
+
+    model_name = os.getenv("OVERSIGHT_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+    use_fp16 = os.getenv("OVERSIGHT_RERANK_FP16", "true").lower() == "true"
+    _reranker = BGEReranker(model_name=model_name, use_fp16=use_fp16)
+    return _reranker
 
 
 def _build_filters(sources_flags: Dict[str, bool]) -> List[str]:
@@ -229,6 +250,14 @@ def search() -> tuple[dict, int]:
         }, 502
 
     results = _dedupe_flat_results(query_groups)
+    
+    # Post-process: Re-rank results against the original user query for global semantic relevance
+    reranker = _get_reranker()
+    if reranker and results:
+        # Use a larger internal top_k for reranking before truncating back to the requested limit
+        reranked_top_k = int(os.getenv("OVERSIGHT_RERANK_TOP_K", str(limit_int)))
+        results = reranker.rerank(query=query_text, papers=results, top_k=reranked_top_k)
+
     return {
         "results": results,
         "query_groups": query_groups,
