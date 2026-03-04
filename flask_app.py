@@ -42,7 +42,9 @@ def _get_reranker() -> BGEReranker | None:
     if not enabled:
         return None
 
-    model_name = os.getenv("OVERSIGHT_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+    # Using 'BAAI/bge-reranker-base' as default for better local performance (CPU/MPS).
+    # 'BAAI/bge-reranker-v2-m3' is much heavier (1GB+).
+    model_name = os.getenv("OVERSIGHT_RERANK_MODEL", "BAAI/bge-reranker-base")
     use_fp16 = os.getenv("OVERSIGHT_RERANK_FP16", "true").lower() == "true"
     _reranker = BGEReranker(model_name=model_name, use_fp16=use_fp16)
     return _reranker
@@ -183,6 +185,7 @@ def search() -> tuple[dict, int]:
     
     # Check if reranking is requested by the client (defaults to false if not specified)
     rerank_requested = body.get("rerank", False)
+    rerank_max_input_param = body.get("rerank_max_input")
     
     search_engine = _get_search_engine()
     agent = QueryDecompositionAgent.from_env()
@@ -260,7 +263,15 @@ def search() -> tuple[dict, int]:
     if reranker and results and rerank_requested:
         # Re-rank against the original user query for global semantic relevance
         reranked_top_k = int(os.getenv("OVERSIGHT_RERANK_TOP_K", str(limit_int)))
-        results = reranker.rerank(query=query_text, papers=results, top_k=reranked_top_k)
+        # Use provided param, else fallback to env/default
+        max_rerank_input = int(rerank_max_input_param) if rerank_max_input_param is not None else int(os.getenv("OVERSIGHT_RERANK_MAX_INPUT", "60"))
+        
+        to_rerank = results[:max_rerank_input]
+        others = results[max_rerank_input:]
+        
+        reranked = reranker.rerank(query=query_text, papers=to_rerank, top_k=reranked_top_k)
+        # Combine reranked results with the rest (if top_k is large)
+        results = reranked + others[:max(0, limit_int - len(reranked))]
 
     return {
         "results": results,
@@ -340,8 +351,15 @@ def digest() -> tuple[dict, int]:
 
 
 if __name__ == "__main__":
+    # Pre-load models if enabled to avoid timeouts on first request
+    if os.getenv("OVERSIGHT_RERANK_ENABLED", "true").lower() == "true":
+        print("[OVERSIGHT] Pre-loading Reranker model...")
+        # Reverting to user preferred powerful model
+        os.environ.setdefault("OVERSIGHT_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+        _get_reranker()
+        
     # Bind to all interfaces for local dev; port can be overridden via FLASK_PORT
-    port = int(os.getenv("FLASK_PORT", "5001"))
+    port = int(os.getenv("FLASK_PORT", "5002"))
     # Use project-specific flags so inherited Flask env vars do not accidentally
     # enable auto-reload during long-running LinearRAG indexing.
     debug_enabled = os.getenv("OVERSIGHT_FLASK_DEBUG", "false").lower() == "true"
